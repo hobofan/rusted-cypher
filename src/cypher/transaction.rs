@@ -99,8 +99,12 @@
 use std::any::Any;
 use std::marker::PhantomData;
 use std::mem;
-use hyper::Client;
-use hyper::header::{Headers, Location};
+use hyper::{
+    Client,
+    net::HttpsConnector,
+    header::{Headers, Location},
+};
+use hyper_rustls::TlsClient;
 use time::{self, Tm};
 
 use ::error::{GraphError, Neo4jError};
@@ -186,7 +190,7 @@ impl<'a> Transaction<'a, Created> {
             transaction: endpoint.to_owned(),
             commit: endpoint.to_owned(),
             expires: time::now_utc(),
-            client: Client::new(),
+            client: Self::new_client(endpoint),
             headers: headers,
             statements: vec![],
             _state: PhantomData,
@@ -235,6 +239,16 @@ impl<'a> Transaction<'a, Created> {
         };
 
         Ok((transaction, result.results))
+    }
+
+    fn new_client(endpoint: &str) -> Client {
+        if endpoint.starts_with("https") {
+            Client::with_connector(HttpsConnector::new(
+                TlsClient::new(),
+            ))
+        } else {
+            Client::new()
+        }
     }
 }
 

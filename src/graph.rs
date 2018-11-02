@@ -59,8 +59,13 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use hyper::{Client, Url};
-use hyper::header::{Authorization, Basic, ContentType, Headers};
+use hyper::{
+    Client,
+    Url,
+    net::HttpsConnector,
+    header::{Authorization, Basic, ContentType, Headers},
+};
+use hyper_rustls::TlsClient;
 use serde_json::{self, Value};
 use serde_json::value as json_value;
 use semver::Version;
@@ -130,7 +135,7 @@ impl GraphClient {
 
         headers.set(ContentType::json());
 
-        let client = Client::new();
+        let client = Self::new_client(&url);
         let mut res = client.get(endpoint)
             .headers(headers.clone())
             .send()
@@ -180,6 +185,16 @@ impl GraphClient {
     #[deprecated(since = "1.0.0", note = "Use methods on `GraphClient` instead")]
     pub fn cypher(&self) -> &Cypher {
         &self.cypher
+    }
+
+    fn new_client(url: &Url) -> Client {
+        if url.scheme().starts_with("https") {
+            Client::with_connector(HttpsConnector::new(
+                TlsClient::new(),
+            ))
+        } else {
+            Client::new()
+        }
     }
 }
 

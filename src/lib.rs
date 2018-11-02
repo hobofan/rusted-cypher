@@ -123,6 +123,8 @@
 //! ```
 
 extern crate hyper;
+extern crate hyper_rustls;
+
 pub extern crate serde;
 pub extern crate serde_json;
 
