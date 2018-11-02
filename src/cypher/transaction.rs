@@ -242,6 +242,7 @@ impl<'a> Transaction<'a, Created> {
     }
 
     fn new_client(endpoint: &str) -> Client {
+        println!("-->> Transaction endpoint: {:?}", endpoint);
         if endpoint.starts_with("https") {
             Client::with_connector(HttpsConnector::new(
                 TlsClient::new(),

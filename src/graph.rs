@@ -116,6 +116,7 @@ pub struct GraphClient {
 impl GraphClient {
     pub fn connect<T: AsRef<str>>(endpoint: T) -> Result<Self, GraphError> {
         let endpoint = endpoint.as_ref();
+        println!("--->> Start connect to {:?}", endpoint);
         let url = Url::parse(endpoint)
             .map_err(|e| {
                 error!("Unable to parse URL");
@@ -143,6 +144,7 @@ impl GraphClient {
                 error!("Unable to connect to server: {}", &e);
                 e
             })?;
+        println!("--->> Response: {:?}", res);
 
         let service_root = decode_service_root(&mut res)?;
 
