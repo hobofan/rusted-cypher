@@ -96,20 +96,23 @@
 //! # }
 //! ```
 
+use hyper::rt::Future;
+use hyper::{
+    client::HttpConnector,
+    client::ResponseFuture,
+    header::{HeaderMap, LOCATION},
+    Client as HyperClient, Request,
+};
+use hyper_rustls::HttpsConnector;
 use std::any::Any;
 use std::marker::PhantomData;
 use std::mem;
-use hyper::{
-    Client,
-    net::HttpsConnector,
-    header::{Headers, Location},
-};
-use hyper_rustls::TlsClient;
+use std::sync::{Arc, Mutex};
 use time::{self, Tm};
 
-use ::error::{GraphError, Neo4jError};
 use super::result::{CypherResult, ResultTrait};
 use super::statement::Statement;
+use error::{GraphError, Neo4jError};
 
 const DATETIME_RFC822: &'static str = "%a, %d %b %Y %T %Z";
 
@@ -156,42 +159,64 @@ impl ResultTrait for CommitResult {
     }
 }
 
+pub enum Client<B = hyper::Body> {
+    HttpClient(HyperClient<HttpConnector, B>),
+    HttpsClient(HyperClient<HttpsConnector<HttpConnector>, B>),
+}
+
+impl Client<hyper::Body> {
+    pub fn new(scheme: &str) -> Client {
+        match scheme {
+            "https" => Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new(4))),
+            "http" => Client::HttpClient(HyperClient::new()),
+            _ => panic!("Unknown scheme \"{}\" for client uri.", scheme),
+        }
+    }
+
+    pub fn request(&self, req: Request<hyper::Body>) -> ResponseFuture {
+        match self {
+            Client::HttpClient(client) => client.request(req),
+            Client::HttpsClient(client) => client.request(req),
+        }
+    }
+}
+
 /// Provides methods to interact with a transaction
 ///
 /// This struct is used to begin a transaction, send queries, commit an rollback a transaction.
 /// Some methods are provided depending on the state of the transaction, for example,
 /// `Transaction::begin` is provided on a `Created` transaction and `Transaction::commit` is provided
 /// on `Started` transaction
-pub struct Transaction<'a, State: Any = Created> {
+pub struct Transaction<State: Any = Created> {
     transaction: String,
     commit: String,
-    expires: Tm,
+    expires: Arc<Mutex<Tm>>,
     client: Client,
-    headers: &'a Headers,
+    headers: HeaderMap,
     statements: Vec<Statement>,
     _state: PhantomData<State>,
 }
 
-impl<'a, State: Any> Transaction<'a, State> {
+impl<State: Any> Transaction<State> {
     /// Adds a statement to the transaction
     pub fn add_statement<S: Into<Statement>>(&mut self, statement: S) {
         self.statements.push(statement.into());
     }
 
     /// Gets the expiration time of the transaction
-    pub fn get_expires(&self) -> &Tm {
-        &self.expires
+    pub fn get_expires(&self) -> std::sync::MutexGuard<Tm> {
+        self.expires.lock().unwrap()
     }
 }
 
-impl<'a> Transaction<'a, Created> {
-    pub fn new(endpoint: &str, headers: &'a Headers) -> Transaction<'a, Created> {
+impl Transaction<Created> {
+    pub fn new(endpoint: &str, headers: &HeaderMap) -> Transaction<Created> {
         Transaction {
             transaction: endpoint.to_owned(),
             commit: endpoint.to_owned(),
-            expires: time::now_utc(),
-            client: Self::new_client(endpoint),
-            headers: headers,
+            expires: Arc::new(Mutex::new(time::now_utc())),
+            client: Client::new(url::Url::parse(endpoint).unwrap().scheme()),
+            headers: headers.to_owned(),
             statements: vec![],
             _state: PhantomData,
         }
@@ -207,52 +232,54 @@ impl<'a> Transaction<'a, Created> {
     ///
     /// Consumes the `Transaction<Created>` and returns the a `Transaction<Started>` alongside with
     /// the results of any `Statement` sent.
-    pub fn begin(self) -> Result<(Transaction<'a, Started>, Vec<CypherResult>), GraphError> {
+    pub fn begin(
+        self,
+    ) -> impl Future<Item = (Transaction<Started>, Vec<CypherResult>), Error = GraphError> {
         debug!("Beginning transaction");
 
-        let mut res = super::send_query(&self.client,
-                                        &self.transaction,
-                                        self.headers,
-                                        self.statements)?;
+        let statements = self.statements.clone();
+        super::send_query(
+            &self.client,
+            &self.transaction,
+            self.headers.clone(),
+            statements,
+        )
+        .and_then(|mut res| {
+            let mut result: TransactionResult = super::parse_response(&mut res)?;
 
-        let mut result: TransactionResult = super::parse_response(&mut res)?;
+            let transaction = res
+                .headers()
+                .get(LOCATION)
+                .map(|location| location.to_str().unwrap().to_owned())
+                .ok_or_else(|| {
+                    error!("No transaction URI returned from server");
+                    GraphError::Transaction("No transaction URI returned from server".to_owned())
+                })?;
 
-        let transaction = res.headers.get::<Location>()
-            .map(|location| location.0.to_owned())
-            .ok_or_else(|| {
-                error!("No transaction URI returned from server");
-                GraphError::Transaction("No transaction URI returned from server".to_owned())
-            })?;
+            let expires = time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
 
-        let expires = time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
+            debug!(
+                "Transaction started at {}, expires in {}",
+                transaction,
+                expires.rfc822z()
+            );
 
-        debug!("Transaction started at {}, expires in {}", transaction, expires.rfc822z());
+            let transaction = Transaction {
+                transaction: transaction,
+                commit: result.commit,
+                expires: Arc::new(Mutex::new(expires)),
+                client: self.client,
+                headers: self.headers,
+                statements: Vec::new(),
+                _state: PhantomData,
+            };
 
-        let transaction = Transaction {
-            transaction: transaction,
-            commit: result.commit,
-            expires: expires,
-            client: self.client,
-            headers: self.headers,
-            statements: Vec::new(),
-            _state: PhantomData,
-        };
-
-        Ok((transaction, result.results))
-    }
-
-    fn new_client(endpoint: &str) -> Client {
-        if endpoint.starts_with("https") {
-            Client::with_connector(HttpsConnector::new(
-                TlsClient::new(),
-            ))
-        } else {
-            Client::new()
-        }
+            Ok((transaction, result.results))
+        })
     }
 }
 
-impl<'a> Transaction<'a, Started> {
+impl Transaction<Started> {
     /// Adds a statement to the transaction in builder style
     pub fn with_statement<S: Into<Statement>>(&mut self, statement: S) -> &mut Self {
         self.add_statement(statement);
@@ -262,162 +289,205 @@ impl<'a> Transaction<'a, Started> {
     /// Executes the given statement
     ///
     /// Any statements added via `add_statement` or `with_statement` will be discarded
-    pub fn exec<S: Into<Statement>>(&mut self, statement: S) -> Result<CypherResult, GraphError> {
+    pub fn exec<S: Into<Statement>>(
+        &mut self,
+        statement: S,
+    ) -> impl Future<Item = CypherResult, Error = GraphError> {
         self.statements.clear();
         self.add_statement(statement);
 
-        let mut results = self.send()?;
-        let result = results.pop()
-            .ok_or(GraphError::Statement("Server returned no results".to_owned()))?;
+        self.send().and_then(|mut results| {
+            let result = results.pop().ok_or(GraphError::Statement(
+                "Server returned no results".to_owned(),
+            ))?;
 
-        Ok(result)
+            Ok(result)
+        })
     }
 
     /// Executes the statements added via `add_statement` or `with_statement`
-    pub fn send(&mut self) -> Result<Vec<CypherResult>, GraphError> {
+    pub fn send(&mut self) -> impl Future<Item = Vec<CypherResult>, Error = GraphError> {
         let mut statements = vec![];
         mem::swap(&mut statements, &mut self.statements);
-        let mut res = super::send_query(&self.client,
-                                        &self.transaction,
-                                        self.headers,
-                                        statements)?;
+        let expires = self.expires.clone();
+        super::send_query(
+            &self.client,
+            &self.transaction,
+            self.headers.clone(),
+            statements,
+        )
+        .and_then(move |mut res| {
+            let mut result: TransactionResult = super::parse_response(&mut res)?;
+            *expires.lock().unwrap() =
+                time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
 
-        let mut result: TransactionResult = super::parse_response(&mut res)?;
-        self.expires = time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
-
-        Ok(result.results)
+            Ok(result.results.clone())
+        })
     }
 
     /// Commits the transaction, returning the results
-    pub fn commit(self) -> Result<Vec<CypherResult>, GraphError> {
+    pub fn commit(self) -> impl Future<Item = Vec<CypherResult>, Error = GraphError> {
         debug!("Commiting transaction {}", self.transaction);
-        let mut res = super::send_query(&self.client,
-                                        &self.commit,
-                                        self.headers,
-                                        self.statements)?;
+        let statements = self.statements.clone();
+        super::send_query(&self.client, &self.commit, self.headers.clone(), statements).and_then(
+            move |mut res| {
+                let result: CommitResult = super::parse_response(&mut res)?;
+                debug!("Transaction commited {}", self.transaction);
 
-        let result: CommitResult = super::parse_response(&mut res)?;
-        debug!("Transaction commited {}", self.transaction);
-
-        Ok(result.results)
+                Ok(result.results)
+            },
+        )
     }
 
     /// Rollback the transaction
-    pub fn rollback(self) -> Result<(), GraphError> {
+    pub fn rollback(self) -> impl Future<Item = (), Error = GraphError> {
         debug!("Rolling back transaction {}", self.transaction);
-        let mut res = self.client.delete(&self.transaction)
-            .headers(self.headers.clone())
-            .send()?;
-
-        super::parse_response::<CommitResult>(&mut res)?;
-        debug!("Transaction rolled back {}", self.transaction);
-
-        Ok(())
+        let mut req = Request::delete(&self.transaction);
+        for (k, v) in self.headers.clone() {
+            req.header(k.unwrap(), v);
+        }
+        let transaction = self.transaction;
+        self.client
+            .request(req.body(hyper::Body::empty()).unwrap())
+            .map_err(|n| n.into())
+            .and_then(move |mut res| {
+                super::parse_response::<CommitResult>(&mut res).unwrap();
+                debug!("Transaction rolled back {}", transaction);
+                Ok(())
+            })
     }
 
     /// Sends a query to just reset the transaction timeout
     ///
     /// All transactions have a timeout. Use this method to keep a transaction alive.
-    pub fn reset_timeout(&mut self) -> Result<(), GraphError> {
-        super::send_query(&self.client,
-                          &self.transaction,
-                          self.headers,
-                          vec![])
-            .map(|_| ())
+    pub fn reset_timeout(&mut self) -> impl Future<Item = (), Error = GraphError> {
+        super::send_query(
+            &self.client,
+            &self.transaction,
+            self.headers.clone(),
+            vec![],
+        )
+        .map(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyper::header::{Authorization, Basic, ContentType, Headers};
+    use headers::{Authorization, ContentType, HeaderMapExt};
+    use hyper::header::HeaderMap;
 
     const URL: &'static str = "http://neo4j:neo4j@localhost:7474/db/data/transaction";
 
-    fn get_headers() -> Headers {
-        let mut headers = Headers::new();
+    fn get_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
 
-        headers.set(Authorization(
-            Basic {
-                username: "neo4j".to_owned(),
-                password: Some("neo4j".to_owned()),
-            }
-        ));
-
-        headers.set(ContentType::json());
+        headers.typed_insert(Authorization::basic("neo4j", "neo4j"));
+        headers.typed_insert(ContentType::json());
 
         headers
     }
 
     #[test]
     fn begin_transaction() {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let headers = get_headers();
         let transaction = Transaction::new(URL, &headers);
-        let result = transaction.begin().unwrap();
+        let result = rt.block_on(transaction.begin()).unwrap();
         assert_eq!(result.1.len(), 0);
     }
 
     #[test]
     fn create_node_and_commit() {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let headers = get_headers();
 
-        Transaction::new(URL, &headers)
-            .with_statement("CREATE (n:TEST_TRANSACTION_CREATE_COMMIT { name: 'Rust', safe: true })")
-            .begin().unwrap()
-            .0.commit().unwrap();
+        let (transaction, _) = rt
+            .block_on(
+                Transaction::new(URL, &headers)
+                    .with_statement(
+                        "CREATE (n:TEST_TRANSACTION_CREATE_COMMIT { name: 'Rust', safe: true })",
+                    )
+                    .begin(),
+            )
+            .unwrap();
+        rt.block_on(transaction.commit()).unwrap();
 
-        let (transaction, results) = Transaction::new(URL, &headers)
-            .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_COMMIT) RETURN n")
-            .begin().unwrap();
+        let (transaction, results) = rt
+            .block_on(
+                Transaction::new(URL, &headers)
+                    .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_COMMIT) RETURN n")
+                    .begin(),
+            )
+            .unwrap();
 
         assert_eq!(results[0].data.len(), 1);
 
-        transaction.rollback().unwrap();
+        rt.block_on(transaction.rollback()).unwrap();
 
-        Transaction::new(URL, &headers)
-            .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_COMMIT) DELETE n")
-            .begin().unwrap()
-            .0.commit().unwrap();
+        let started_transaction = rt
+            .block_on(
+                Transaction::new(URL, &headers)
+                    .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_COMMIT) DELETE n")
+                    .begin(),
+            )
+            .unwrap();
+        rt.block_on(started_transaction.0.commit()).unwrap();
     }
 
     #[test]
     fn create_node_and_rollback() {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let headers = get_headers();
 
-        let (mut transaction, _) = Transaction::new(URL, &headers)
-            .with_statement("CREATE (n:TEST_TRANSACTION_CREATE_ROLLBACK { name: 'Rust', safe: true })")
-            .begin().unwrap();
+        let (mut transaction, _) = rt
+            .block_on(
+                Transaction::new(URL, &headers)
+                    .with_statement(
+                        "CREATE (n:TEST_TRANSACTION_CREATE_ROLLBACK { name: 'Rust', safe: true })",
+                    )
+                    .begin(),
+            )
+            .unwrap();
 
-        let result = transaction
-            .exec("MATCH (n:TEST_TRANSACTION_CREATE_ROLLBACK) RETURN n")
+        let result = rt
+            .block_on(transaction.exec("MATCH (n:TEST_TRANSACTION_CREATE_ROLLBACK) RETURN n"))
             .unwrap();
 
         assert_eq!(result.data.len(), 1);
 
-        transaction.rollback().unwrap();
+        rt.block_on(transaction.rollback()).unwrap();
 
-        let (transaction, results) = Transaction::new(URL, &headers)
-            .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_ROLLBACK) RETURN n")
-            .begin().unwrap();
+        let (transaction, results) = rt
+            .block_on(
+                Transaction::new(URL, &headers)
+                    .with_statement("MATCH (n:TEST_TRANSACTION_CREATE_ROLLBACK) RETURN n")
+                    .begin(),
+            )
+            .unwrap();
 
         assert_eq!(results[0].data.len(), 0);
 
-        transaction.rollback().unwrap();
+        rt.block_on(transaction.rollback()).unwrap();
     }
 
     #[test]
     fn query_open_transaction() {
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         let headers = get_headers();
 
-        let (mut transaction, _) = Transaction::new(URL, &headers).begin().unwrap();
+        let (mut transaction, _) = rt
+            .block_on(Transaction::new(URL, &headers).begin())
+            .unwrap();
 
-        let result = transaction
-            .exec(
-                "CREATE (n:TEST_TRANSACTION_QUERY_OPEN { name: 'Rust', safe: true }) RETURN n")
+        let result = rt
+            .block_on(transaction.exec(
+                "CREATE (n:TEST_TRANSACTION_QUERY_OPEN { name: 'Rust', safe: true }) RETURN n",
+            ))
             .unwrap();
 
         assert_eq!(result.data.len(), 1);
 
-        transaction.rollback().unwrap();
+        rt.block_on(transaction.rollback()).unwrap();
     }
 }

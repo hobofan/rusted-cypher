@@ -122,8 +122,12 @@
 //! # }
 //! ```
 
+extern crate bytes;
+extern crate headers;
 extern crate hyper;
 extern crate hyper_rustls;
+extern crate tokio;
+extern crate url;
 
 pub extern crate serde;
 pub extern crate serde_json;
@@ -141,9 +145,9 @@ extern crate quick_error;
 extern crate log;
 
 pub mod cypher;
-pub mod graph;
 pub mod error;
+pub mod graph;
 
-pub use graph::GraphClient;
 pub use cypher::Statement;
 pub use error::GraphError;
+pub use graph::GraphClient;
