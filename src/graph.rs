@@ -57,10 +57,10 @@
 //! }
 //! ```
 
+use futures::prelude::*;
 use headers::HeaderMapExt;
 use headers::{Authorization, ContentType};
 use hyper::header::HeaderMap;
-use hyper::rt::{Future, Stream};
 use hyper::Request;
 use semver::Version;
 use serde_json::value as json_value;
@@ -70,10 +70,10 @@ use std::io::Cursor;
 use std::io::Read;
 use url::Url;
 
-use cypher::statement::Statement;
-use cypher::transaction::{Client, Created as TransactionCreated, Transaction};
-use cypher::{Cypher, CypherQuery, CypherResult};
-use error::GraphError;
+use crate::cypher::statement::Statement;
+use crate::cypher::transaction::{Client, Created as TransactionCreated, Transaction};
+use crate::cypher::{Cypher, CypherQuery, CypherResult};
+use crate::error::GraphError;
 
 #[derive(Deserialize)]
 pub struct ServiceRoot {
@@ -113,7 +113,7 @@ pub struct GraphClient {
 }
 
 impl GraphClient {
-    pub fn connect<T: AsRef<str>>(endpoint: T) -> impl Future<Item = Self, Error = GraphError> {
+    pub async fn connect<T: AsRef<str>>(endpoint: T) -> Result<Self, GraphError> {
         let endpoint = endpoint.as_ref();
         let url = Url::parse(endpoint).unwrap();
 
@@ -129,33 +129,27 @@ impl GraphClient {
         for (k, v) in headers.clone() {
             req.header(k.unwrap(), v);
         }
-        let res_fut = client
+        let res = client
             .request(req.body(hyper::Body::empty()).unwrap())
-            .map_err(Into::<GraphError>::into);
+            .err_into::<GraphError>()
+            .await?;
 
-        let body_bytes_fut = res_fut
-            .and_then(|res| res.into_body().concat2().map_err(From::from))
-            .map(|chunk| chunk.to_vec());
+        let body_bytes: Vec<u8> = res.into_body().try_concat().await?.to_vec();
 
-        body_bytes_fut
-            .map_err(Into::<GraphError>::into)
-            .and_then(|body_bytes: Vec<u8>| {
-                let mut cursor = Cursor::new(body_bytes);
-                let service_root = decode_service_root(&mut cursor)?;
+        let mut cursor = Cursor::new(body_bytes);
+        let service_root = decode_service_root(&mut cursor)?;
 
-                let neo4j_version = Version::parse(&service_root.neo4j_version)?;
-                let cypher_endpoint = Url::parse(&service_root.transaction)?;
+        let neo4j_version = Version::parse(&service_root.neo4j_version)?;
+        let cypher_endpoint = Url::parse(&service_root.transaction)?;
 
-                let cypher = Cypher::new(cypher_endpoint, client, headers.clone());
+        let cypher = Cypher::new(cypher_endpoint, client, headers.clone());
 
-                Ok(GraphClient {
-                    headers: headers,
-                    service_root: service_root,
-                    neo4j_version: neo4j_version,
-                    cypher: cypher,
-                })
-            })
-            .map_err(|e: GraphError| e)
+        Ok(GraphClient {
+            headers: headers,
+            service_root: service_root,
+            neo4j_version: neo4j_version,
+            cypher: cypher,
+        })
     }
 
     /// Creates a new `CypherQuery`
@@ -167,11 +161,8 @@ impl GraphClient {
     ///
     /// Parameter can be anything that implements `Into<Statement>`, `Into<String>` or `Statement`
     /// itself
-    pub fn exec<S: Into<Statement>>(
-        &self,
-        statement: S,
-    ) -> impl Future<Item = CypherResult, Error = GraphError> {
-        self.cypher.exec(statement)
+    pub async fn exec<S: Into<Statement>>(&self, statement: S) -> Result<CypherResult, GraphError> {
+        self.cypher.exec(statement).await
     }
 
     /// Creates a new `Transaction`

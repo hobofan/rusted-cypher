@@ -96,14 +96,14 @@
 //! # }
 //! ```
 
-use hyper::rt::Future;
+use futures::prelude::*;
 use hyper::{
     client::HttpConnector,
     client::ResponseFuture,
     header::{HeaderMap, LOCATION},
     Client as HyperClient, Request,
 };
-use hyper_rustls::HttpsConnector;
+use hyper_tls::HttpsConnector;
 use std::any::Any;
 use std::marker::PhantomData;
 use std::mem;
@@ -112,7 +112,7 @@ use time::{self, Tm};
 
 use super::result::{CypherResult, ResultTrait};
 use super::statement::Statement;
-use error::{GraphError, Neo4jError};
+use crate::error::{GraphError, Neo4jError};
 
 const DATETIME_RFC822: &'static str = "%a, %d %b %Y %T %Z";
 
@@ -167,7 +167,9 @@ pub enum Client<B = hyper::Body> {
 impl Client<hyper::Body> {
     pub fn new(scheme: &str) -> Client {
         match scheme {
-            "https" => Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new(4))),
+            "https" => {
+                Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new(4).unwrap()))
+            }
             "http" => Client::HttpClient(HyperClient::new()),
             _ => panic!("Unknown scheme \"{}\" for client uri.", scheme),
         }
@@ -232,50 +234,48 @@ impl Transaction<Created> {
     ///
     /// Consumes the `Transaction<Created>` and returns the a `Transaction<Started>` alongside with
     /// the results of any `Statement` sent.
-    pub fn begin(
-        self,
-    ) -> impl Future<Item = (Transaction<Started>, Vec<CypherResult>), Error = GraphError> {
+    pub async fn begin(self) -> Result<(Transaction<Started>, Vec<CypherResult>), GraphError> {
         debug!("Beginning transaction");
 
         let statements = self.statements.clone();
-        super::send_query(
+        let mut res = super::send_query(
             &self.client,
             &self.transaction,
             self.headers.clone(),
             statements,
         )
-        .and_then(|mut res| {
-            let mut result: TransactionResult = super::parse_response(&mut res)?;
+        .await?;
 
-            let transaction = res
-                .headers()
-                .get(LOCATION)
-                .map(|location| location.to_str().unwrap().to_owned())
-                .ok_or_else(|| {
-                    error!("No transaction URI returned from server");
-                    GraphError::Transaction("No transaction URI returned from server".to_owned())
-                })?;
+        let mut result: TransactionResult = super::parse_response(&mut res).await?;
 
-            let expires = time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
+        let transaction = res
+            .headers()
+            .get(LOCATION)
+            .map(|location| location.to_str().unwrap().to_owned())
+            .ok_or_else(|| {
+                error!("No transaction URI returned from server");
+                GraphError::Transaction("No transaction URI returned from server".to_owned())
+            })?;
 
-            debug!(
-                "Transaction started at {}, expires in {}",
-                transaction,
-                expires.rfc822z()
-            );
+        let expires = time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
 
-            let transaction = Transaction {
-                transaction: transaction,
-                commit: result.commit,
-                expires: Arc::new(Mutex::new(expires)),
-                client: self.client,
-                headers: self.headers,
-                statements: Vec::new(),
-                _state: PhantomData,
-            };
+        debug!(
+            "Transaction started at {}, expires in {}",
+            transaction,
+            expires.rfc822z()
+        );
 
-            Ok((transaction, result.results))
-        })
+        let transaction = Transaction {
+            transaction: transaction,
+            commit: result.commit,
+            expires: Arc::new(Mutex::new(expires)),
+            client: self.client,
+            headers: self.headers,
+            statements: Vec::new(),
+            _state: PhantomData,
+        };
+
+        Ok((transaction, result.results))
     }
 }
 
@@ -289,84 +289,88 @@ impl Transaction<Started> {
     /// Executes the given statement
     ///
     /// Any statements added via `add_statement` or `with_statement` will be discarded
-    pub fn exec<S: Into<Statement>>(
+    pub async fn exec<S: Into<Statement>>(
         &mut self,
         statement: S,
-    ) -> impl Future<Item = CypherResult, Error = GraphError> {
+    ) -> Result<CypherResult, GraphError> {
         self.statements.clear();
         self.add_statement(statement);
 
-        self.send().and_then(|mut results| {
-            let result = results.pop().ok_or(GraphError::Statement(
-                "Server returned no results".to_owned(),
-            ))?;
+        let mut results = self.send().await?;
 
-            Ok(result)
-        })
+        let result = results.pop().ok_or(GraphError::Statement(
+            "Server returned no results".to_owned(),
+        ))?;
+
+        Ok(result)
     }
 
     /// Executes the statements added via `add_statement` or `with_statement`
-    pub fn send(&mut self) -> impl Future<Item = Vec<CypherResult>, Error = GraphError> {
+    pub async fn send(&mut self) -> Result<Vec<CypherResult>, GraphError> {
         let mut statements = vec![];
         mem::swap(&mut statements, &mut self.statements);
         let expires = self.expires.clone();
-        super::send_query(
+
+        let mut res = super::send_query(
             &self.client,
             &self.transaction,
             self.headers.clone(),
             statements,
         )
-        .and_then(move |mut res| {
-            let mut result: TransactionResult = super::parse_response(&mut res)?;
-            *expires.lock().unwrap() =
-                time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
+        .await?;
 
-            Ok(result.results.clone())
-        })
+        let mut result: TransactionResult = super::parse_response(&mut res).await?;
+        *expires.lock().unwrap() =
+            time::strptime(&mut result.transaction.expires, DATETIME_RFC822)?;
+
+        Ok(result.results.clone())
     }
 
     /// Commits the transaction, returning the results
-    pub fn commit(self) -> impl Future<Item = Vec<CypherResult>, Error = GraphError> {
+    pub async fn commit(self) -> Result<Vec<CypherResult>, GraphError> {
         debug!("Commiting transaction {}", self.transaction);
         let statements = self.statements.clone();
-        super::send_query(&self.client, &self.commit, self.headers.clone(), statements).and_then(
-            move |mut res| {
-                let result: CommitResult = super::parse_response(&mut res)?;
-                debug!("Transaction commited {}", self.transaction);
 
-                Ok(result.results)
-            },
-        )
+        let mut res =
+            super::send_query(&self.client, &self.commit, self.headers.clone(), statements).await?;
+
+        let result: CommitResult = super::parse_response(&mut res).await?;
+        debug!("Transaction commited {}", self.transaction);
+
+        Ok(result.results)
     }
 
     /// Rollback the transaction
-    pub fn rollback(self) -> impl Future<Item = (), Error = GraphError> {
+    pub async fn rollback(self) -> Result<(), GraphError> {
         debug!("Rolling back transaction {}", self.transaction);
         let mut req = Request::delete(&self.transaction);
         for (k, v) in self.headers.clone() {
             req.header(k.unwrap(), v);
         }
         let transaction = self.transaction;
-        self.client
+
+        let mut res = self
+            .client
             .request(req.body(hyper::Body::empty()).unwrap())
-            .map_err(|n| n.into())
-            .and_then(move |mut res| {
-                super::parse_response::<CommitResult>(&mut res).unwrap();
-                debug!("Transaction rolled back {}", transaction);
-                Ok(())
-            })
+            .err_into::<GraphError>()
+            .await?;
+
+        super::parse_response::<CommitResult>(&mut res).await?;
+        debug!("Transaction rolled back {}", transaction);
+        Ok(())
     }
 
     /// Sends a query to just reset the transaction timeout
     ///
     /// All transactions have a timeout. Use this method to keep a transaction alive.
-    pub fn reset_timeout(&mut self) -> impl Future<Item = (), Error = GraphError> {
+    pub async fn reset_timeout(&mut self) -> Result<(), GraphError> {
         super::send_query(
             &self.client,
             &self.transaction,
             self.headers.clone(),
             vec![],
         )
+        .await
         .map(|_| ())
     }
 }

@@ -7,6 +7,7 @@ extern crate serde_derive;
 
 extern crate rusted_cypher;
 
+use futures::prelude::*;
 use hyper::rt::Future;
 use rusted_cypher::cypher::result::Row;
 use rusted_cypher::{GraphClient, Statement};
@@ -23,7 +24,7 @@ struct Language {
 
 #[test]
 fn save_retrieve_struct() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -50,7 +51,7 @@ fn save_retrieve_struct() {
 
 #[test]
 fn transaction_create_on_begin_commit() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -87,7 +88,7 @@ fn transaction_create_on_begin_commit() {
 
 #[test]
 fn transaction_create_after_begin_commit() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -121,7 +122,7 @@ fn transaction_create_after_begin_commit() {
 
 #[test]
 fn transaction_create_on_commit() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -154,7 +155,7 @@ fn transaction_create_on_commit() {
 
 #[test]
 fn transaction_create_on_begin_rollback() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -194,7 +195,7 @@ fn transaction_create_on_begin_rollback() {
 
 #[test]
 fn transaction_create_after_begin_rollback() {
-    let mut rt = Runtime::new().unwrap();
+    let rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -221,7 +222,7 @@ fn transaction_create_after_begin_rollback() {
 
     assert_eq!(rust, lang);
 
-    hyper::rt::run(transaction.rollback().map_err(|_| ()).map(|_| ()));
+    rt.block_on(transaction.rollback().map_err(|_| ()).map(|_| ()));
 
     let results = rt
         .block_on(graph.exec("MATCH (n:NTLY_INTG_TEST_6) RETURN n"))

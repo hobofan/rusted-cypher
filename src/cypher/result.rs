@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use serde_json;
 use serde_json::value::Value;
 
-use ::error::{GraphError, Neo4jError};
+use crate::error::{GraphError, Neo4jError};
 
 pub trait ResultTrait {
     fn results(&self) -> &Vec<CypherResult>;
@@ -98,7 +98,12 @@ impl<'a> Row<'a> {
     pub fn get_n<T: DeserializeOwned>(&self, column: usize) -> Result<T, GraphError> {
         let column_data = match self.data.get(column) {
             Some(c) => c.clone(),
-            None => return Err(GraphError::Statement(format!("No column at index {}", column))),
+            None => {
+                return Err(GraphError::Statement(format!(
+                    "No column at index {}",
+                    column
+                )))
+            }
         };
 
         serde_json::from_value::<T>(column_data).map_err(From::from)
@@ -117,9 +122,9 @@ impl<'a> Iterator for Rows<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use serde_json::value as json_value;
     use super::*;
+    use serde_json::value as json_value;
+    use std::collections::BTreeMap;
 
     #[derive(Clone, Serialize)]
     struct Person {
@@ -136,8 +141,12 @@ mod tests {
         let node = json_value::to_value(&node).unwrap();
         let row_data = vec![node];
 
-        let row1 = RowResult { row: row_data.clone() };
-        let row2 = RowResult { row: row_data.clone() };
+        let row1 = RowResult {
+            row: row_data.clone(),
+        };
+        let row2 = RowResult {
+            row: row_data.clone(),
+        };
 
         let data = vec![row1, row2];
         let columns = vec!["node".to_owned()];

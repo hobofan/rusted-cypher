@@ -10,9 +10,8 @@ pub use self::transaction::Transaction;
 
 use std::collections::BTreeMap;
 
-use bytes::Buf;
+use futures::prelude::*;
 use hyper::header::HeaderMap;
-use hyper::rt::{Future, Stream};
 use hyper::Request;
 use hyper::Response;
 use serde::de::DeserializeOwned;
@@ -24,14 +23,14 @@ use url::Url;
 
 use self::result::{QueryResult, ResultTrait};
 use self::transaction::Client;
-use error::GraphError;
+use crate::error::GraphError;
 
-fn send_query(
+async fn send_query(
     client: &Client,
     endpoint: &str,
     headers: HeaderMap,
     statements: Vec<Statement>,
-) -> impl Future<Item = Response<hyper::Body>, Error = GraphError> {
+) -> Result<Response<hyper::Body>, GraphError> {
     let mut json = BTreeMap::new();
     json.insert("statements", statements);
 
@@ -47,13 +46,14 @@ fn send_query(
     }
     let req = req.body(json.into()).unwrap();
 
-    client.request(req).map_err(From::from)
+    client.request(req).await.map_err(From::from)
 }
 
-fn parse_response<T: DeserializeOwned + ResultTrait>(
+async fn parse_response<T: DeserializeOwned + ResultTrait>(
     res: &mut Response<hyper::Body>,
 ) -> Result<T, GraphError> {
-    let result: Value = json_de::from_reader(res.body_mut().concat2().wait().unwrap().reader())?;
+    let body_bytes: Vec<u8> = res.body_mut().try_concat().await?.to_vec();
+    let result: Value = json_de::from_slice(&body_bytes)?;
 
     if let Some(errors) = result.get("errors") {
         if errors.as_array().map(|a| a.len()).unwrap_or(0) > 0 {
@@ -114,18 +114,12 @@ impl Cypher {
     ///
     /// Parameter can be anything that implements `Into<Statement>`, `Into<String>` or `Statement`
     /// itself
-    pub fn exec<S: Into<Statement>>(
-        &self,
-        statement: S,
-    ) -> impl Future<Item = CypherResult, Error = GraphError> {
-        self.query()
-            .with_statement(statement)
-            .send()
-            .and_then(|mut results| {
-                results.pop().ok_or(GraphError::Other(
-                    "No results returned from server".to_owned(),
-                ))
-            })
+    pub async fn exec<S: Into<Statement>>(&self, statement: S) -> Result<CypherResult, GraphError> {
+        let mut results = self.query().with_statement(statement).send().await?;
+
+        results.pop().ok_or(GraphError::Other(
+            "No results returned from server".to_owned(),
+        ))
     }
 
     /// Creates a new `Transaction`
@@ -169,30 +163,32 @@ impl<'a> CypherQuery<'a> {
     ///
     /// The statements contained in the query are sent to the server and the results are parsed
     /// into a `Vec<CypherResult>` in order to match the response of the neo4j api.
-    pub fn send(self) -> impl Future<Item = Vec<CypherResult>, Error = GraphError> {
-        send_query(
+    pub async fn send(self) -> Result<Vec<CypherResult>, GraphError> {
+        let endpoint_commit = self.cypher.endpoint_commit();
+        let mut res = send_query(
             self.cypher.client(),
-            &self.cypher.endpoint_commit(),
+            &endpoint_commit,
             self.cypher.headers().clone(),
             self.statements,
         )
-        .and_then(|mut res| {
-            let result: QueryResult = parse_response(&mut res)?;
-            if result.errors().len() > 0 {
-                return Err(GraphError::Neo4j(result.errors().clone()));
-            }
+        .await?;
 
-            Ok(result.results)
-        })
+        let result: QueryResult = parse_response(&mut res).await?;
+        if result.errors().len() > 0 {
+            return Err(GraphError::Neo4j(result.errors().clone()));
+        }
+
+        Ok(result.results)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cypher::result::Row;
     use headers::HeaderMapExt;
     use tokio::runtime::Runtime;
+
+    use crate::cypher::result::Row;
 
     fn get_cypher() -> Cypher {
         use headers::{Authorization, ContentType};

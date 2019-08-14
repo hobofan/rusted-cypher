@@ -121,22 +121,13 @@
 //! # Ok(())
 //! # }
 //! ```
-
-extern crate bytes;
-extern crate headers;
-extern crate hyper;
-extern crate hyper_rustls;
-extern crate tokio;
-extern crate url;
+#![feature(async_await)]
 
 pub extern crate serde;
 pub extern crate serde_json;
 
 #[macro_use]
 extern crate serde_derive;
-
-extern crate semver;
-extern crate time;
 
 #[macro_use]
 extern crate quick_error;
