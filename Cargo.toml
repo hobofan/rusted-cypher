@@ -20,9 +20,9 @@ include = [
 ]
 
 [dependencies]
-hyper = { git = "https://github.com/hobofan/hyper", rev = "c7b0763926d2abd60ff719ada83849f28eca7f60" }
-hyper-tls= { git = "https://github.com/hobofan/hyper-tls", rev = "70007d5aa581f56fab681b4ed75505b482bbe15c" }
-futures-preview = { version = "=0.3.0-alpha.17" }
+hyper = { git = "https://github.com/hyperium/hyper", rev = "4920f5e264c57f87dc8b91e7ed9a575359cc093c" }
+hyper-tls= { git = "https://github.com/hobofan/hyper-tls", rev = "b00cdf581f91910369f15c293d2cf129609c3b24" }
+futures-preview = { version = "0.3.0-alpha.17" }
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
@@ -33,4 +33,4 @@ log = "0.3"
 headers = "0.2.1"
 url = "1.7.2"
 bytes = "0.4.12"
-tokio = "0.2.0-alpha.1"
+tokio = "0.2.0-alpha.2"
