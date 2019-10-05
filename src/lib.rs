@@ -121,8 +121,6 @@
 //! # Ok(())
 //! # }
 //! ```
-#![feature(async_await)]
-
 pub extern crate serde;
 pub extern crate serde_json;
 

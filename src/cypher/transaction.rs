@@ -168,7 +168,7 @@ impl Client<hyper::Body> {
     pub fn new(scheme: &str) -> Client {
         match scheme {
             "https" => {
-                Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new(4).unwrap()))
+                Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new().unwrap()))
             }
             "http" => Client::HttpClient(HyperClient::new()),
             _ => panic!("Unknown scheme \"{}\" for client uri.", scheme),

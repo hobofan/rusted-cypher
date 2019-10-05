@@ -20,9 +20,9 @@ include = [
 ]
 
 [dependencies]
-hyper = { git = "https://github.com/hyperium/hyper", rev = "4920f5e264c57f87dc8b91e7ed9a575359cc093c" }
-hyper-tls= { git = "https://github.com/hobofan/hyper-tls", rev = "b00cdf581f91910369f15c293d2cf129609c3b24" }
-futures-preview = { version = "0.3.0-alpha.17" }
+hyper = { version = "0.13.0-alpha.4", features = ["unstable-stream"] }
+hyper-tls= "0.4.0-alpha.4"
+futures-preview = "0.3.0-alpha.19"
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
@@ -33,4 +33,4 @@ log = "0.3"
 headers = "0.2.1"
 url = "1.7.2"
 bytes = "0.4.12"
-tokio = "0.2.0-alpha.2"
+tokio = "0.2.0-alpha.6"
