@@ -127,14 +127,14 @@ impl GraphClient {
 
         let mut req = Request::get(endpoint);
         for (k, v) in headers.clone() {
-            req.header(k.unwrap(), v);
+            req.headers_mut().unwrap().insert(k.unwrap(), v);
         }
         let res = client
             .request(req.body(hyper::Body::empty()).unwrap())
             .err_into::<GraphError>()
             .await?;
 
-        let body_bytes: Vec<u8> = res.into_body().try_concat().await?.to_vec();
+        let body_bytes: Vec<u8> = hyper::body::to_bytes(res).await?.to_vec();
 
         let mut cursor = Cursor::new(body_bytes);
         let service_root = decode_service_root(&mut cursor)?;

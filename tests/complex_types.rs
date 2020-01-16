@@ -8,7 +8,6 @@ extern crate serde_derive;
 extern crate rusted_cypher;
 
 use futures::prelude::*;
-use hyper::rt::Future;
 use rusted_cypher::cypher::result::Row;
 use rusted_cypher::{GraphClient, Statement};
 use tokio::runtime::Runtime;
@@ -24,7 +23,7 @@ struct Language {
 
 #[test]
 fn save_retrieve_struct() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -51,7 +50,7 @@ fn save_retrieve_struct() {
 
 #[test]
 fn transaction_create_on_begin_commit() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -88,7 +87,7 @@ fn transaction_create_on_begin_commit() {
 
 #[test]
 fn transaction_create_after_begin_commit() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -122,7 +121,7 @@ fn transaction_create_after_begin_commit() {
 
 #[test]
 fn transaction_create_on_commit() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -155,7 +154,7 @@ fn transaction_create_on_commit() {
 
 #[test]
 fn transaction_create_on_begin_rollback() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),
@@ -195,7 +194,7 @@ fn transaction_create_on_begin_rollback() {
 
 #[test]
 fn transaction_create_after_begin_rollback() {
-    let rt = Runtime::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let rust = Language {
         name: "Rust".to_owned(),
         level: "low".to_owned(),

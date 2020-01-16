@@ -167,9 +167,7 @@ pub enum Client<B = hyper::Body> {
 impl Client<hyper::Body> {
     pub fn new(scheme: &str) -> Client {
         match scheme {
-            "https" => {
-                Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new().unwrap()))
-            }
+            "https" => Client::HttpsClient(HyperClient::builder().build(HttpsConnector::new())),
             "http" => Client::HttpClient(HyperClient::new()),
             _ => panic!("Unknown scheme \"{}\" for client uri.", scheme),
         }
@@ -345,7 +343,7 @@ impl Transaction<Started> {
         debug!("Rolling back transaction {}", self.transaction);
         let mut req = Request::delete(&self.transaction);
         for (k, v) in self.headers.clone() {
-            req.header(k.unwrap(), v);
+            req.headers_mut().unwrap().insert(k.unwrap(), v);
         }
         let transaction = self.transaction;
 

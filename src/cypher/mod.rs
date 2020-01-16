@@ -10,7 +10,6 @@ pub use self::transaction::Transaction;
 
 use std::collections::BTreeMap;
 
-use futures::prelude::*;
 use hyper::header::HeaderMap;
 use hyper::Request;
 use hyper::Response;
@@ -42,7 +41,7 @@ async fn send_query(
     );
     let mut req = Request::post(endpoint);
     for (k, v) in headers {
-        req.header(k.unwrap(), v);
+        req.headers_mut().unwrap().insert(k.unwrap(), v);
     }
     let req = req.body(json.into()).unwrap();
 
@@ -52,7 +51,7 @@ async fn send_query(
 async fn parse_response<T: DeserializeOwned + ResultTrait>(
     res: &mut Response<hyper::Body>,
 ) -> Result<T, GraphError> {
-    let body_bytes: Vec<u8> = res.body_mut().try_concat().await?.to_vec();
+    let body_bytes: Vec<u8> = hyper::body::to_bytes(res).await?.to_vec();
     let result: Value = json_de::from_slice(&body_bytes)?;
 
     if let Some(errors) = result.get("errors") {
